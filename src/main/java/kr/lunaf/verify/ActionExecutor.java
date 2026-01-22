@@ -10,11 +10,20 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import kr.lunaf.verify.api.LunaVerifierActionContext;
+import kr.lunaf.verify.api.LunaVerifierActionHandler;
+import kr.lunaf.verify.api.LunaVerifierPayload;
+import kr.lunaf.verify.event.LunaVerifierActionEvent;
+import kr.lunaf.verify.event.LunaVerifierHttpRequestEvent;
 import org.bukkit.entity.Player;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -33,6 +42,7 @@ public class ActionExecutor {
   private final Set<Integer> httpAllowedPorts;
   private final HttpClient httpClient;
   private final ExecutorService httpExecutor;
+  private final ConcurrentMap<String, LunaVerifierActionHandler> actionHandlers = new ConcurrentHashMap<>();
 
   public ActionExecutor(JavaPlugin plugin, FileConfiguration config) {
     this.plugin = plugin;
@@ -88,13 +98,13 @@ public class ActionExecutor {
       .build();
     this.httpExecutor = Executors.newFixedThreadPool(2, runnable -> {
       Thread thread = new Thread(runnable);
-      thread.setName("lunavotifier-http");
+      thread.setName("lunaverifier-http");
       thread.setDaemon(true);
       return thread;
     });
   }
 
-  public void execute(JsonArray actions, TokenReplacer tokens, String eventType) {
+  public void execute(JsonArray actions, TokenReplacer tokens, String eventType, LunaVerifierPayload payload) {
     if (actions == null || actions.isEmpty()) {
       return;
     }
@@ -105,6 +115,9 @@ public class ActionExecutor {
       final JsonObject action = element.getAsJsonObject();
       final String type = getString(action, "type");
       if (type == null) {
+        continue;
+      }
+      if (isActionCancelled(type, action, tokens, eventType, payload)) {
         continue;
       }
       switch (type) {
@@ -124,10 +137,10 @@ public class ActionExecutor {
           executeBroadcast(action, tokens);
           break;
         case "http_request":
-          executeHttpRequest(action, tokens, eventType);
+          executeHttpRequest(action, tokens, eventType, payload);
           break;
         default:
-          if (logUnknownActions) {
+          if (!executeCustomAction(type, action, tokens, eventType, payload) && logUnknownActions) {
             plugin.getLogger().warning("Unknown action type: " + type);
           }
           break;
@@ -137,6 +150,34 @@ public class ActionExecutor {
 
   public void shutdown() {
     httpExecutor.shutdownNow();
+  }
+
+  public void registerActionHandler(String type, LunaVerifierActionHandler handler) {
+    final String key = normalizeActionType(type);
+    if (key == null || handler == null) {
+      return;
+    }
+    actionHandlers.put(key, handler);
+  }
+
+  public void unregisterActionHandler(String type) {
+    final String key = normalizeActionType(type);
+    if (key == null) {
+      return;
+    }
+    actionHandlers.remove(key);
+  }
+
+  public boolean hasActionHandler(String type) {
+    final String key = normalizeActionType(type);
+    if (key == null) {
+      return false;
+    }
+    return actionHandlers.containsKey(key);
+  }
+
+  public Set<String> getRegisteredActionTypes() {
+    return Set.copyOf(actionHandlers.keySet());
   }
 
   private void executeConsoleCommand(JsonObject action, TokenReplacer tokens) {
@@ -233,7 +274,7 @@ public class ActionExecutor {
     Bukkit.getScheduler().runTask(plugin, () -> Bukkit.broadcastMessage(finalMessage));
   }
 
-  private void executeHttpRequest(JsonObject action, TokenReplacer tokens, String eventType) {
+  private void executeHttpRequest(JsonObject action, TokenReplacer tokens, String eventType, LunaVerifierPayload payload) {
     if (!enableHttpActions) {
       plugin.getLogger().warning("http_request is disabled. Event: " + eventType);
       return;
@@ -294,11 +335,8 @@ public class ActionExecutor {
       timeout = Duration.ofSeconds(timeoutSeconds);
     }
 
-    HttpRequest.Builder builder = HttpRequest.newBuilder()
-      .uri(uri)
-      .timeout(timeout);
-
     boolean hasContentType = false;
+    final Map<String, String> headerMap = new HashMap<>();
     if (action.has("headers") && action.get("headers").isJsonObject()) {
       for (java.util.Map.Entry<String, JsonElement> entry : action.getAsJsonObject("headers").entrySet()) {
         final String headerName = entry.getKey();
@@ -313,7 +351,7 @@ public class ActionExecutor {
             headerValue = tokens.apply(entry.getValue().toString());
           }
         }
-        builder.header(headerName, headerValue);
+        headerMap.put(headerName, headerValue);
         if ("content-type".equalsIgnoreCase(headerName)) {
           hasContentType = true;
         }
@@ -322,14 +360,37 @@ public class ActionExecutor {
 
     if (bodyText != null) {
       if (!hasContentType) {
-        builder.header("Content-Type", "application/json");
+        headerMap.put("Content-Type", "application/json");
       }
+    }
+
+    final boolean shouldLogResponse = getBoolean(action, "log_response", logHttpResponse);
+    final LunaVerifierHttpRequestEvent httpEvent = new LunaVerifierHttpRequestEvent(
+      isAsync(),
+      payload,
+      uri,
+      method,
+      bodyText,
+      timeout,
+      headerMap
+    );
+    Bukkit.getPluginManager().callEvent(httpEvent);
+    if (httpEvent.isCancelled()) {
+      return;
+    }
+
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+      .uri(uri)
+      .timeout(timeout);
+    for (Map.Entry<String, String> header : headerMap.entrySet()) {
+      builder.header(header.getKey(), header.getValue());
+    }
+    if (bodyText != null) {
       builder.method(method, HttpRequest.BodyPublishers.ofString(bodyText));
     } else {
       builder.method(method, HttpRequest.BodyPublishers.noBody());
     }
 
-    final boolean shouldLogResponse = getBoolean(action, "log_response", logHttpResponse);
     httpExecutor.submit(() -> {
       try {
         HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
@@ -365,6 +426,55 @@ public class ActionExecutor {
       }
     }
     return false;
+  }
+
+  private boolean executeCustomAction(
+    String type,
+    JsonObject action,
+    TokenReplacer tokens,
+    String eventType,
+    LunaVerifierPayload payload
+  ) {
+    final String key = normalizeActionType(type);
+    if (key == null) {
+      return false;
+    }
+    final LunaVerifierActionHandler handler = actionHandlers.get(key);
+    if (handler == null) {
+      return false;
+    }
+    handler.handle(new LunaVerifierActionContext(plugin, key, action, tokens, eventType, payload, isAsync()));
+    return true;
+  }
+
+  private boolean isActionCancelled(
+    String type,
+    JsonObject action,
+    TokenReplacer tokens,
+    String eventType,
+    LunaVerifierPayload payload
+  ) {
+    final LunaVerifierActionEvent event = new LunaVerifierActionEvent(
+      isAsync(),
+      type,
+      action,
+      tokens,
+      eventType,
+      payload
+    );
+    Bukkit.getPluginManager().callEvent(event);
+    return event.isCancelled();
+  }
+
+  private static String normalizeActionType(String type) {
+    if (type == null || type.isBlank()) {
+      return null;
+    }
+    return type.trim().toLowerCase(Locale.ROOT);
+  }
+
+  private static boolean isAsync() {
+    return !Bukkit.isPrimaryThread();
   }
 
   private boolean isAllowedScheme(String scheme) {

@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class TcpServer {
-  private final LunaVotifierPlugin plugin;
+  private final LunaVerifierPlugin plugin;
   private final int port;
   private final ExecutorService acceptExecutor;
   private final ThreadPoolExecutor clientExecutor;
@@ -27,14 +27,14 @@ public class TcpServer {
   private ServerSocket serverSocket;
 
   public TcpServer(
-    LunaVotifierPlugin plugin,
+    LunaVerifierPlugin plugin,
     int port,
     int maxClientThreads,
     int queueSize
   ) {
     this.plugin = plugin;
     this.port = port;
-    this.acceptExecutor = Executors.newSingleThreadExecutor(new NamedThreadFactory("lunavotifier-accept"));
+    this.acceptExecutor = Executors.newSingleThreadExecutor(new NamedThreadFactory("lunaverifier-accept"));
     final int safeThreads = Math.max(1, maxClientThreads);
     final int safeQueue = Math.max(1, queueSize);
     this.clientExecutor = new ThreadPoolExecutor(
@@ -43,7 +43,7 @@ public class TcpServer {
       0L,
       TimeUnit.MILLISECONDS,
       new ArrayBlockingQueue<>(safeQueue),
-      new NamedThreadFactory("lunavotifier-client"),
+      new NamedThreadFactory("lunaverifier-client"),
       new ThreadPoolExecutor.AbortPolicy()
     );
   }
