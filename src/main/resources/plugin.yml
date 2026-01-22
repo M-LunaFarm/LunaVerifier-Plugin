@@ -1,4 +1,4 @@
-name: LunaVerifier
+name: ${project.name}
 main: kr.lunaf.verify.LunaVotifierPlugin
-version: 0.1.0
+version: ${project.version}
 api-version: 1.19
