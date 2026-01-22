@@ -7,6 +7,12 @@ timestamp-skew-seconds: 300
 # Idempotency TTL in seconds. Set 0 to keep forever.
 # 멱등성 TTL(초). 0으로 설정하면 영구 보관합니다.
 idempotency-ttl-seconds: 86400
+# Max worker threads for handling TCP clients.
+# TCP 클라이언트 처리 워커 스레드 최대 개수.
+tcp-worker-threads: 8
+# Max queued TCP clients before rejecting connections.
+# 큐에 대기할 TCP 연결 최대 개수 (초과 시 거부).
+tcp-worker-queue-size: 100
 # Allow http_request actions.
 # http_request 액션 허용 여부.
 enable-http-actions: false
@@ -22,6 +28,35 @@ http-log-response-max: 500
 # Allowed hosts for http_request actions. Empty = block all.
 # http_request에서 허용할 호스트 목록. 비어 있으면 모두 차단합니다.
 http-allowlist: []
+# Allowed schemes for http_request (http/https). Empty = default (http, https).
+# http_request에서 허용할 스킴. 비어 있으면 기본값(http, https).
+http-allowed-schemes:
+  - http
+  - https
+# Allowed ports for http_request.
+# http_request에서 허용할 포트.
+http-allowed-ports:
+  - 80
+  - 443
+# Update checker settings.
+# 자동 업데이트 체크 설정.
+update-check-enabled: true
+# Auto download update jar to plugins/update (requires restart).
+# 자동 업데이트 다운로드 (서버 재시작 필요).
+update-auto-download: true
+# GitHub owner/repo for releases.
+# 릴리즈가 올라가는 GitHub owner/repo.
+update-github-owner: "M-LunaFarm"
+update-github-repo: "LunaVerifier-Plugin"
+# Release asset name to download (optional). If empty, first .jar asset is used.
+# 다운로드할 릴리즈 에셋 이름(선택). 비어 있으면 첫 .jar 에셋 사용.
+update-release-asset: ""
+# Update check interval in seconds. 0 to check once at startup.
+# 업데이트 체크 주기(초). 0이면 시작 시 1회만 체크.
+update-check-interval-seconds: 21600
+# Download timeout in seconds.
+# 업데이트 다운로드 타임아웃(초).
+update-download-timeout-seconds: 30
 # Log unknown action types.
 # 알 수 없는 액션 타입 로그 기록.
 log-unknown-actions: true

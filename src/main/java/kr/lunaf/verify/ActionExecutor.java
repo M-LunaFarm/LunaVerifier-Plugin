@@ -29,6 +29,8 @@ public class ActionExecutor {
   private final int httpTimeoutSeconds;
   private final boolean logHttpResponse;
   private final int logHttpResponseMax;
+  private final Set<String> httpAllowedSchemes;
+  private final Set<Integer> httpAllowedPorts;
   private final HttpClient httpClient;
   private final ExecutorService httpExecutor;
 
@@ -47,6 +49,40 @@ public class ActionExecutor {
     this.httpTimeoutSeconds = Math.max(1, config.getInt("http-timeout-seconds", 5));
     this.logHttpResponse = config.getBoolean("http-log-response", false);
     this.logHttpResponseMax = Math.max(100, config.getInt("http-log-response-max", 500));
+    this.httpAllowedSchemes = new HashSet<>();
+    if (config.isList("http-allowed-schemes")) {
+      for (Object item : config.getList("http-allowed-schemes")) {
+        if (item != null) {
+          final String scheme = String.valueOf(item).trim().toLowerCase(Locale.ROOT);
+          if (!scheme.isEmpty()) {
+            httpAllowedSchemes.add(scheme);
+          }
+        }
+      }
+    }
+    if (httpAllowedSchemes.isEmpty()) {
+      httpAllowedSchemes.add("http");
+      httpAllowedSchemes.add("https");
+    }
+    this.httpAllowedPorts = new HashSet<>();
+    if (config.isList("http-allowed-ports")) {
+      for (Object item : config.getList("http-allowed-ports")) {
+        if (item != null) {
+          try {
+            int port = Integer.parseInt(String.valueOf(item).trim());
+            if (port > 0) {
+              httpAllowedPorts.add(port);
+            }
+          } catch (NumberFormatException err) {
+            // ignore
+          }
+        }
+      }
+    }
+    if (httpAllowedPorts.isEmpty()) {
+      httpAllowedPorts.add(80);
+      httpAllowedPorts.add(443);
+    }
     this.httpClient = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(3))
       .build();
@@ -217,6 +253,20 @@ public class ActionExecutor {
       return;
     }
 
+    final String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+    if (!isAllowedScheme(scheme)) {
+      plugin.getLogger().warning("Blocked http_request scheme: " + scheme);
+      return;
+    }
+    int port = uri.getPort();
+    if (port == -1) {
+      port = defaultPortForScheme(scheme);
+    }
+    if (!isAllowedPort(port)) {
+      plugin.getLogger().warning("Blocked http_request port: " + port);
+      return;
+    }
+
     final String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
     if (!isAllowedHost(host)) {
       plugin.getLogger().warning("Blocked http_request host: " + host);
@@ -315,6 +365,33 @@ public class ActionExecutor {
       }
     }
     return false;
+  }
+
+  private boolean isAllowedScheme(String scheme) {
+    if (scheme == null || scheme.isBlank()) {
+      return false;
+    }
+    return httpAllowedSchemes.contains(scheme.toLowerCase(Locale.ROOT));
+  }
+
+  private int defaultPortForScheme(String scheme) {
+    if (scheme == null) {
+      return -1;
+    }
+    if ("http".equalsIgnoreCase(scheme)) {
+      return 80;
+    }
+    if ("https".equalsIgnoreCase(scheme)) {
+      return 443;
+    }
+    return -1;
+  }
+
+  private boolean isAllowedPort(int port) {
+    if (port <= 0) {
+      return false;
+    }
+    return httpAllowedPorts.contains(port);
   }
 
   private static String getString(JsonObject obj, String key) {

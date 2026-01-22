@@ -9,24 +9,43 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class TcpServer {
   private final LunaVotifierPlugin plugin;
   private final int port;
   private final ExecutorService acceptExecutor;
-  private final ExecutorService clientExecutor;
+  private final ThreadPoolExecutor clientExecutor;
   private volatile boolean running;
   private ServerSocket serverSocket;
 
-  public TcpServer(LunaVotifierPlugin plugin, int port) {
+  public TcpServer(
+    LunaVotifierPlugin plugin,
+    int port,
+    int maxClientThreads,
+    int queueSize
+  ) {
     this.plugin = plugin;
     this.port = port;
     this.acceptExecutor = Executors.newSingleThreadExecutor(new NamedThreadFactory("lunavotifier-accept"));
-    this.clientExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("lunavotifier-client"));
+    final int safeThreads = Math.max(1, maxClientThreads);
+    final int safeQueue = Math.max(1, queueSize);
+    this.clientExecutor = new ThreadPoolExecutor(
+      safeThreads,
+      safeThreads,
+      0L,
+      TimeUnit.MILLISECONDS,
+      new ArrayBlockingQueue<>(safeQueue),
+      new NamedThreadFactory("lunavotifier-client"),
+      new ThreadPoolExecutor.AbortPolicy()
+    );
   }
 
   public void start() throws IOException {
@@ -39,7 +58,12 @@ public class TcpServer {
     while (running) {
       try {
         final Socket socket = serverSocket.accept();
-        clientExecutor.submit(() -> handleClient(socket));
+        try {
+          clientExecutor.submit(() -> handleClient(socket));
+        } catch (RejectedExecutionException err) {
+          plugin.getLogger().warning("TCP client queue full; dropping connection.");
+          closeQuietly(socket);
+        }
       } catch (SocketException err) {
         if (running) {
           plugin.getLogger().warning("TCP accept error: " + err.getMessage());
@@ -81,6 +105,17 @@ public class TcpServer {
     }
     acceptExecutor.shutdownNow();
     clientExecutor.shutdownNow();
+  }
+
+  private static void closeQuietly(Socket socket) {
+    if (socket == null) {
+      return;
+    }
+    try {
+      socket.close();
+    } catch (IOException err) {
+      // ignore
+    }
   }
 
   private static class NamedThreadFactory implements ThreadFactory {

@@ -24,6 +24,7 @@ public class LunaVotifierPlugin extends JavaPlugin {
   private TcpServer tcpServer;
   private EventDeduplicator deduplicator;
   private ActionExecutor actionExecutor;
+  private UpdateService updateService;
   private String serverSecret;
   private boolean requireSignature;
   private long timestampSkewSeconds;
@@ -34,9 +35,20 @@ public class LunaVotifierPlugin extends JavaPlugin {
     reloadConfig();
 
     final int port = getConfig().getInt("listen-port", 8192);
-    serverSecret = getConfig().getString("server-secret", "").trim();
-    requireSignature = getConfig().getBoolean("require-signature", true);
+    final String configuredSecret = getConfig().getString("server-secret", "");
+    serverSecret = configuredSecret == null ? "" : configuredSecret.trim();
+    final boolean configRequireSignature = getConfig().getBoolean("require-signature", true);
+    requireSignature = true;
     timestampSkewSeconds = getConfig().getLong("timestamp-skew-seconds", 300L);
+
+    if (!configRequireSignature) {
+      getLogger().warning("require-signature is false in config; overriding to true for safety.");
+    }
+    if (serverSecret.isEmpty()) {
+      getLogger().severe("server-secret is empty. Signature verification is required; disabling plugin.");
+      getServer().getPluginManager().disablePlugin(this);
+      return;
+    }
 
     final long ttlSeconds = getConfig().getLong("idempotency-ttl-seconds", 86400L);
     deduplicator = new EventDeduplicator(new File(getDataFolder(), CACHE_FILE), ttlSeconds);
@@ -44,17 +56,23 @@ public class LunaVotifierPlugin extends JavaPlugin {
 
     actionExecutor = new ActionExecutor(this, getConfig());
 
-    if (requireSignature && serverSecret.isEmpty()) {
-      getLogger().warning("server-secret is empty. Signature verification will fail.");
-    }
-
-    tcpServer = new TcpServer(this, port);
+    final int tcpWorkerThreads = Math.max(1, getConfig().getInt("tcp-worker-threads", 8));
+    final int tcpWorkerQueue = Math.max(1, getConfig().getInt("tcp-worker-queue-size", 100));
+    tcpServer = new TcpServer(
+      this,
+      port,
+      tcpWorkerThreads,
+      tcpWorkerQueue
+    );
     try {
       tcpServer.start();
       getLogger().info("Listening for LunaVotifier events on port " + port);
     } catch (Exception err) {
       getLogger().severe("Failed to start TCP listener: " + err.getMessage());
     }
+
+    updateService = new UpdateService(this, getConfig());
+    updateService.start();
   }
 
   @Override
@@ -68,6 +86,9 @@ public class LunaVotifierPlugin extends JavaPlugin {
     }
     if (actionExecutor != null) {
       actionExecutor.shutdown();
+    }
+    if (updateService != null) {
+      updateService.stop();
     }
   }
 
